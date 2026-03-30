@@ -36,6 +36,7 @@ That creates three problems:
 
 ## Supported Skill Roots
 
+- `<current-workdir>/skills`
 - `~/.codex/skills`
 - `~/.agents/skills`
 - `~/.claude/skills`
@@ -56,7 +57,7 @@ By default it affects behavior in two ways:
 This does not break `skill-sync`. It usually improves convergence, because one shared directory is a good source of truth. If you want a different preference order, use:
 
 ```bash
-python3 scripts/skill_sync.py --source-order codex,claude,agents,opencode,openclaw
+python3 scripts/skill_sync.py --source-order workspace,codex,claude,agents,opencode,openclaw
 ```
 
 ## Install
@@ -89,6 +90,12 @@ Scan local skills:
 python3 scripts/skill_sync.py
 ```
 
+Scan a specific workspace and include its local `skills/` directory:
+
+```bash
+python3 scripts/skill_sync.py --workdir /path/to/workspace
+```
+
 Only list shared skills:
 
 ```bash
@@ -99,6 +106,12 @@ Only list host-specific skills:
 
 ```bash
 python3 scripts/skill_sync.py --status specific --list-names
+```
+
+List shared and host-specific skills together:
+
+```bash
+python3 scripts/skill_sync.py --status shared,specific --list-names
 ```
 
 Preview dedupe with the safest policy:

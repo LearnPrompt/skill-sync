@@ -1,6 +1,7 @@
 ---
 name: skill-sync
 description: Discover locally installed skills across Codex, Claude, OpenClaw, OpenCode, and shared agent libraries; classify which skills are already shared, duplicated but linkable, or platform-specific; optionally create missing symlinks for portable SKILL.md-based skills without overwriting existing installs.
+homepage: https://github.com/LearnPrompt/skill-sync
 ---
 
 # Skill Sync
@@ -84,6 +85,7 @@ python3 scripts/skill_sync.py \
 
 The script scans these host roots when they exist:
 
+- `<current-workdir>/skills`
 - `~/.codex/skills`
 - `~/.agents/skills`
 - `~/.claude/skills`

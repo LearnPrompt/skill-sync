@@ -58,9 +58,20 @@ def env_path(name: str, default: str) -> Path:
     return Path(os.environ.get(name, default)).expanduser()
 
 
-def build_root_specs() -> list[RootSpec]:
+def build_root_specs(workdir: Path) -> list[RootSpec]:
     home = Path.home()
     roots: list[RootSpec] = []
+
+    workspace_skills = (workdir / "skills").resolve()
+    if workspace_skills.is_dir():
+        roots.append(
+            RootSpec(
+                platform="workspace",
+                label=str(workdir),
+                path=workspace_skills,
+                link_target=False,
+            )
+        )
 
     primary_roots = [
         RootSpec(
@@ -692,6 +703,25 @@ def filter_report_groups(report: dict, statuses: set[str]) -> dict:
     return filtered
 
 
+def parse_status_filters(raw_filters: list[str]) -> set[str]:
+    if not raw_filters:
+        return set()
+
+    statuses: set[str] = set()
+    for raw in raw_filters:
+        for part in raw.split(","):
+            value = part.strip()
+            if not value:
+                continue
+            if value not in STATUS_ORDER:
+                raise SystemExit(
+                    "Invalid status filter: "
+                    f"{value}. Valid values: {', '.join(STATUS_ORDER)}"
+                )
+            statuses.add(value)
+    return statuses
+
+
 def build_operations(report: dict, sync_missing: bool, dedupe: bool) -> list[dict]:
     operations: list[dict] = []
 
@@ -879,6 +909,8 @@ def format_text(report: dict, sync_missing: bool, dedupe: bool, apply: bool) -> 
     )
     lines.append("")
 
+    group_order = ("workspace",) + STATUS_ORDER
+
     for status in STATUS_ORDER:
         matching = [group for group in report["groups"] if group["status"] == status]
         if not matching:
@@ -995,9 +1027,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--status",
         action="append",
-        choices=STATUS_ORDER,
         default=[],
-        help="Filter results to one or more statuses",
+        help="Filter results to one or more statuses; repeat or use comma-separated values",
     )
     parser.add_argument(
         "--list-names",
@@ -1040,8 +1071,13 @@ def parse_args() -> argparse.Namespace:
         help="Directory for backup runs and restore manifests",
     )
     parser.add_argument(
+        "--workdir",
+        default=".",
+        help="Workspace directory used to detect ./skills roots",
+    )
+    parser.add_argument(
         "--source-order",
-        default="agents,codex,claude,opencode,openclaw",
+        default="agents,codex,claude,opencode,openclaw,workspace",
         help="Preferred source host order when timestamps are tied",
     )
     return parser.parse_args()
@@ -1064,7 +1100,8 @@ def main() -> int:
         raise SystemExit("--apply requires --sync-missing or --dedupe")
 
     skill_filter = {item.strip() for item in args.skill if item.strip()}
-    roots = build_root_specs()
+    workdir = Path(args.workdir).expanduser().resolve()
+    roots = build_root_specs(workdir)
     source_order = [
         platform.strip()
         for platform in args.source_order.split(",")
@@ -1077,7 +1114,7 @@ def main() -> int:
         source_order=source_order,
         strategy=args.strategy,
     )
-    report = filter_report_groups(report, set(args.status))
+    report = filter_report_groups(report, parse_status_filters(args.status))
 
     if args.apply and not args.dry_run:
         operations = build_operations(
