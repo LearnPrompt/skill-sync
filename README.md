@@ -1,17 +1,40 @@
 # skill-sync
 
-`skill-sync` 是一个轻量的本地 Skill 管理工具，用来扫描多个 AI Agent 宿主中的 Skill，并把重复安装收敛为“一个 canonical source + 多处软链接”。
+Unify local AI Agent skills across Codex, Claude, OpenClaw, OpenCode, and shared skill directories.
 
-## 功能
+`skill-sync` scans the skill roots on your machine, tells you which skills are already shared, which are duplicated, which are compatible-but-different, and can safely converge duplicate installs into one canonical source plus symlinks.
 
-- 扫描本机多个宿主下的 Skill 安装
-- 分类 `shared / duplicate / compatible / specific / mixed`
-- 规划缺失软链接
-- 自动选择 canonical source
-- 将重复副本替换成软链接
-- 备份被替换的副本并支持恢复
+## Why
 
-## 支持扫描的宿主
+When you use multiple AI coding agents, the same skill often ends up installed several times:
+
+- one copy in `~/.codex/skills`
+- another in `~/.claude/skills`
+- another in `~/.openclaw/skills`
+- sometimes a shared copy in `~/.agents/skills`
+
+That creates three problems:
+
+- updates drift across platforms
+- reinstalling the same skill wastes time
+- it becomes hard to tell which copy is the real source of truth
+
+`skill-sync` fixes that by turning repeated local installs into:
+
+- one canonical source
+- multiple symlinks
+- a reversible backup trail
+
+## What It Does
+
+- Discover skills across multiple local AI agent hosts
+- Classify each skill as `shared`, `duplicate`, `compatible`, `specific`, or `mixed`
+- Plan missing symlink installs
+- Choose a canonical source automatically
+- Replace duplicate copies with symlinks
+- Back up replaced installs into a dedicated restoreable run directory
+
+## Supported Skill Roots
 
 - `~/.codex/skills`
 - `~/.agents/skills`
@@ -21,58 +44,106 @@
 - `~/.openclaw/skills`
 - `~/.openclaw/extensions/*/skills`
 
-## 快速开始
+## Install
 
-在仓库根目录运行：
+Clone the repo and install by symlink:
+
+```bash
+git clone git@github.com:LearnPrompt/skill-sync.git
+cd skill-sync
+./install.sh --codex
+```
+
+Install into multiple hosts at once:
+
+```bash
+./install.sh --codex --claude --openclaw --agents
+```
+
+See all install options:
+
+```bash
+./install.sh --help
+```
+
+## Quick Start
+
+Scan local skills:
 
 ```bash
 python3 scripts/skill_sync.py
 ```
 
-只预览去重计划：
+Preview dedupe with the safest policy:
 
 ```bash
 python3 scripts/skill_sync.py --dedupe --strategy strict
 ```
 
-按“保留最新版本”策略执行去重：
+Dedupe by keeping the newest portable version:
 
 ```bash
 python3 scripts/skill_sync.py --dedupe --strategy prefer-latest --apply
 ```
 
-恢复最近一次执行：
+Plan missing installs using the same canonical source logic:
+
+```bash
+python3 scripts/skill_sync.py --sync-missing --strategy prefer-latest
+```
+
+Restore the latest run:
 
 ```bash
 python3 scripts/skill_sync.py --restore latest
 python3 scripts/skill_sync.py --restore latest --apply
 ```
 
-## 策略
+## How It Classifies Skills
 
-- `strict`：只处理内容完全一致的可移植 Skill
-- `prefer-latest`：同名可移植 Skill 内容不一致时，保留最新修改时间的版本
-- `trust-high`：在 `prefer-latest` 基础上，也允许替换更激进的扫描根目录
+- `shared`: multiple hosts already point to the same real path
+- `duplicate`: multiple portable installs have identical content but different real paths
+- `compatible`: multiple portable installs share the same skill name but differ in content
+- `specific`: only found on one host
+- `mixed`: same name exists, but with incompatible formats or host-specific structure
 
-## 备份
+## Strategies
 
-执行 `--apply` 后，备份默认写到：
+- `strict`: only dedupe identical portable skills
+- `prefer-latest`: for portable duplicates with differences, keep the newest real path
+- `trust-high`: same canonical selection as `prefer-latest`, but allows more aggressive replacement of scanned roots
 
-```bash
+## Backup Model
+
+Applied runs are stored under:
+
+```text
 ~/.skill-sync/backups/<run-id>/
 ```
 
-其中包含：
+Each run includes:
 
 - `manifest.json`
 - `originals/...`
-- `latest` 指针
+- `latest` symlink
 
-## 项目结构
+That means dedupe is reversible. Replaced directories are moved before a symlink is created in their original location.
+
+## Example Workflow
+
+1. Install the skill into your main hosts with `./install.sh`.
+2. Run `python3 scripts/skill_sync.py` to inspect the current state.
+3. Run `python3 scripts/skill_sync.py --dedupe --strategy strict` to preview safe convergences.
+4. If you want newest-wins behavior, run `python3 scripts/skill_sync.py --dedupe --strategy prefer-latest --apply`.
+5. If needed, restore with `python3 scripts/skill_sync.py --restore latest --apply`.
+
+## Project Layout
 
 ```text
 .
 ├── SKILL.md
+├── README.md
+├── install.sh
 ├── agents/openai.yaml
 ├── references/compatibility.md
 └── scripts/skill_sync.py
