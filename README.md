@@ -44,6 +44,21 @@ That creates three problems:
 - `~/.openclaw/skills`
 - `~/.openclaw/extensions/*/skills`
 
+### About `~/.agents/skills`
+
+If you already use `~/.agents/skills` as a shared skill library, that is expected and works well with `skill-sync`.
+
+By default it affects behavior in two ways:
+
+- it participates in discovery like every other root
+- it is first in the default source priority, so shared agent copies often become the canonical source when there is a tie
+
+This does not break `skill-sync`. It usually improves convergence, because one shared directory is a good source of truth. If you want a different preference order, use:
+
+```bash
+python3 scripts/skill_sync.py --source-order codex,claude,agents,opencode,openclaw
+```
+
 ## Install
 
 Clone the repo and install by symlink:
@@ -72,6 +87,18 @@ Scan local skills:
 
 ```bash
 python3 scripts/skill_sync.py
+```
+
+Only list shared skills:
+
+```bash
+python3 scripts/skill_sync.py --status shared --list-names
+```
+
+Only list host-specific skills:
+
+```bash
+python3 scripts/skill_sync.py --status specific --list-names
 ```
 
 Preview dedupe with the safest policy:

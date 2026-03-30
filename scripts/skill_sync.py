@@ -652,6 +652,46 @@ def build_report(
     }
 
 
+def filter_report_groups(report: dict, statuses: set[str]) -> dict:
+    if not statuses:
+        return report
+
+    groups = [group for group in report["groups"] if group["status"] in statuses]
+    status_counts: dict[str, int] = defaultdict(int)
+    discovered_entries = 0
+    for group in groups:
+        status_counts[group["status"]] += 1
+        discovered_entries += len(group["entries"])
+
+    allowed_names = {group["name"] for group in groups}
+    planned_links = [
+        plan for plan in report["planned_links"] if plan["name"] in allowed_names
+    ]
+    dedupe_plan = [
+        plan for plan in report["dedupe_plan"] if plan["name"] in allowed_names
+    ]
+
+    filtered = dict(report)
+    filtered["groups"] = groups
+    filtered["planned_links"] = planned_links
+    filtered["dedupe_plan"] = dedupe_plan
+    filtered["summary"] = {
+        "total_skills": len(groups),
+        "status_counts": {
+            status: status_counts.get(status, 0) for status in STATUS_ORDER
+        },
+        "discovered_entries": discovered_entries,
+        "planned_missing_links": sum(
+            len(item["destinations"]) for item in planned_links
+        ),
+        "planned_dedupe_replacements": sum(
+            len(item["replacements"]) for item in dedupe_plan
+        ),
+    }
+    filtered["status_filter"] = sorted(statuses)
+    return filtered
+
+
 def build_operations(report: dict, sync_missing: bool, dedupe: bool) -> list[dict]:
     operations: list[dict] = []
 
@@ -830,6 +870,8 @@ def format_text(report: dict, sync_missing: bool, dedupe: bool, apply: bool) -> 
         f"{summary['discovered_entries']} installs."
     )
     lines.append(f"Strategy: {report['strategy']}")
+    if report.get("status_filter"):
+        lines.append("Status filter: " + ", ".join(report["status_filter"]))
     counts = summary["status_counts"]
     lines.append(
         "Status counts: "
@@ -893,6 +935,20 @@ def format_text(report: dict, sync_missing: bool, dedupe: bool, apply: bool) -> 
     return "\n".join(lines).strip()
 
 
+def format_name_list(report: dict) -> str:
+    lines: list[str] = []
+    for status in STATUS_ORDER:
+        matching = [group for group in report["groups"] if group["status"] == status]
+        if not matching:
+            continue
+        lines.append(f"[{status}]")
+        for group in matching:
+            lines.append(group["name"])
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
 def format_restore_text(manifest: dict, apply: bool) -> str:
     lines = [
         f"Restore run: {manifest['run_id']}",
@@ -935,6 +991,18 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="Limit to one or more skill names",
+    )
+    parser.add_argument(
+        "--status",
+        action="append",
+        choices=STATUS_ORDER,
+        default=[],
+        help="Filter results to one or more statuses",
+    )
+    parser.add_argument(
+        "--list-names",
+        action="store_true",
+        help="Print only skill names grouped by status",
     )
     parser.add_argument(
         "--sync-missing",
@@ -1009,6 +1077,7 @@ def main() -> int:
         source_order=source_order,
         strategy=args.strategy,
     )
+    report = filter_report_groups(report, set(args.status))
 
     if args.apply and not args.dry_run:
         operations = build_operations(
@@ -1025,6 +1094,10 @@ def main() -> int:
 
     if args.format == "json":
         print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.list_names:
+        print(format_name_list(report))
         return 0
 
     print(
