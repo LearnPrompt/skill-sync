@@ -1,6 +1,6 @@
 ---
 name: skill-sync
-description: Audit and converge local skills across Codex, Claude, OpenClaw, OpenCode, workspace skills, and shared agent libraries; compute a hygiene score, classify shared vs duplicate vs compatible skills, diff conflicting installs, and safely deduplicate into one canonical source with restoreable backups.
+description: One source of truth for local AI agent skills: audit Codex, Claude, OpenClaw, OpenCode, workspace skills, and shared roots; score hygiene, diff conflicting installs, deduplicate into one canonical source, and migrate the same layout across machines with restoreable backups.
 homepage: https://github.com/LearnPrompt/skill-sync
 ---
 
@@ -17,6 +17,7 @@ Use this skill when you want one lightweight workflow for:
 - identifying platform-specific skills that should stay local
 - safely filling missing installs with symlinks instead of copying files
 - backing up replaced installs and restoring them later if needed
+- exporting a portable layout manifest and importing it on another machine
 
 The workflow is intentionally conservative:
 
@@ -85,6 +86,25 @@ Preview a one-root convergence plan:
 ```bash
 python3 scripts/skill_sync.py \
   --adopt-root agents
+```
+
+Export a migration manifest:
+
+```bash
+python3 scripts/skill_sync.py \
+  --adopt-root agents \
+  --export-manifest .skill-sync/agent-layout.json
+```
+
+Preview or apply that topology on another machine:
+
+```bash
+python3 scripts/skill_sync.py \
+  --import-manifest .skill-sync/agent-layout.json
+
+python3 scripts/skill_sync.py \
+  --import-manifest .skill-sync/agent-layout.json \
+  --apply
 ```
 
 Inspect a compatible skill with file-level diff:
@@ -163,5 +183,18 @@ When `--dedupe` is enabled, the script:
 - moves each replaced install to `~/.skill-sync/backups/<run-id>/originals/...`
 - creates a symlink at the original path
 - writes `manifest.json` so the run can be restored later
+
+When `--export-manifest` is enabled, the script:
+
+- records the canonical source choice for each portable skill
+- records which primary hosts should expose each skill
+- writes a portable JSON manifest that can be imported on another machine
+
+When `--import-manifest` is enabled, the script:
+
+- finds matching local canonical sources on the current machine
+- previews missing roots and missing sources before mutating anything
+- creates or replaces host installs with symlinks to match the manifest layout
+- reuses the same backup-and-restore flow as local dedupe
 
 If you need the detection details or compatibility notes, read [references/compatibility.md](./references/compatibility.md).

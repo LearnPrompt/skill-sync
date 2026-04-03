@@ -40,6 +40,7 @@ ALL_PLATFORMS = PRIMARY_PLATFORMS + ("workspace",)
 STATUS_ORDER = ("shared", "duplicate", "compatible", "specific", "mixed")
 SCRIPT_PATH = Path(__file__).resolve()
 RECOMMENDATION_LIMIT = 6
+LAYOUT_MANIFEST_KIND = "skill-sync-layout"
 
 
 @dataclass(frozen=True)
@@ -667,6 +668,27 @@ def enrich_report(report: dict) -> dict:
     return enriched
 
 
+def group_entries_from_report(group: dict) -> list[SkillEntry]:
+    entries: list[SkillEntry] = []
+    for item in group["entries"]:
+        entries.append(
+            SkillEntry(
+                name=group["name"],
+                platform=item["platform"],
+                root_label=item["root_label"],
+                path=Path(item["path"]),
+                resolved_path=Path(item["resolved_path"]),
+                format=item["format"],
+                portable=item["portable"],
+                symlinked=item["symlinked"],
+                link_target=item["link_target"],
+                content_hash=item["content_hash"],
+                latest_mtime_ns=item["latest_mtime_ns"],
+            )
+        )
+    return entries
+
+
 def build_report(
     entries: list[SkillEntry],
     roots: list[RootSpec],
@@ -973,6 +995,78 @@ def build_skill_diff(
     }
 
 
+def build_layout_manifest(report: dict) -> dict:
+    planned_links_by_name = {item["name"]: item for item in report["planned_links"]}
+    roots_by_platform: dict[str, list[str]] = defaultdict(list)
+    for root in report["roots"]:
+        roots_by_platform[root["platform"]].append(root["path"])
+
+    skills: list[dict] = []
+    for group in report["groups"]:
+        entries = group_entries_from_report(group)
+        portable = all(entry.portable for entry in entries) and bool(entries)
+        canonical = None
+        if portable:
+            canonical = choose_canonical_source(
+                entries,
+                report["source_order"],
+                report["strategy"],
+                allow_specific=True,
+            )
+
+        existing_primary_platforms = sorted(
+            {entry.platform for entry in entries if entry.platform in PRIMARY_PLATFORMS}
+        )
+        desired_platforms = set(existing_primary_platforms)
+        planned_links = planned_links_by_name.get(group["name"])
+        if planned_links:
+            desired_platforms.update(
+                destination["platform"] for destination in planned_links["destinations"]
+            )
+
+        skills.append(
+            {
+                "name": group["name"],
+                "status": group["status"],
+                "reason": group["reason"],
+                "portable": portable,
+                "importable": portable and canonical is not None,
+                "existing_platforms": existing_primary_platforms,
+                "desired_platforms": sorted(desired_platforms),
+                "canonical": (
+                    {
+                        "platform": canonical["platform"],
+                        "root_label": canonical["root_label"],
+                        "path": canonical["display_path"],
+                        "resolved_path": canonical["resolved_path"],
+                        "selected_by": canonical["selected_by"],
+                    }
+                    if canonical is not None
+                    else None
+                ),
+            }
+        )
+
+    importable_count = sum(1 for skill in skills if skill["importable"])
+    desired_placements = sum(len(skill["desired_platforms"]) for skill in skills)
+    return {
+        "kind": LAYOUT_MANIFEST_KIND,
+        "version": 1,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "strategy": report["strategy"],
+        "source_order": report["source_order"],
+        "adopt_root": report.get("adopt_root"),
+        "roots": roots_by_platform,
+        "summary": {
+            "total_skills": len(skills),
+            "importable_skills": importable_count,
+            "desired_placements": desired_placements,
+            "status_counts": report["summary"]["status_counts"],
+        },
+        "skills": skills,
+    }
+
+
 def build_operations(report: dict, sync_missing: bool, dedupe: bool) -> list[dict]:
     operations: list[dict] = []
 
@@ -1025,6 +1119,10 @@ def absolute_to_backup_path(run_dir: Path, original_path: Path) -> Path:
 
 def write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
+def read_json(path: Path) -> dict:
+    return json.loads(path.read_text())
 
 
 def update_latest_pointer(backup_root: Path, run_dir: Path) -> None:
@@ -1110,7 +1208,7 @@ def restore_run(run_dir: Path, apply: bool) -> dict:
     if not manifest_path.is_file():
         raise SystemExit(f"Missing manifest: {manifest_path}")
 
-    manifest = json.loads(manifest_path.read_text())
+    manifest = read_json(manifest_path)
     actions = manifest.get("actions", [])
     if not apply:
         return manifest
@@ -1135,6 +1233,194 @@ def restore_run(run_dir: Path, apply: bool) -> dict:
     manifest["restored_at"] = datetime.now().isoformat(timespec="seconds")
     write_json(manifest_path, manifest)
     return manifest
+
+
+def load_layout_manifest(path: Path) -> dict:
+    manifest = read_json(path)
+    if manifest.get("kind") != LAYOUT_MANIFEST_KIND:
+        raise SystemExit(f"Unsupported manifest kind in {path}")
+    if manifest.get("version") != 1:
+        raise SystemExit(f"Unsupported manifest version in {path}")
+    return manifest
+
+
+def find_manifest_source_entry(
+    skill_spec: dict,
+    grouped_entries: dict[str, list[SkillEntry]],
+    source_order: list[str],
+) -> SkillEntry | None:
+    entries = grouped_entries.get(skill_spec["name"], [])
+    if not entries:
+        return None
+
+    portable_entries = [entry for entry in entries if entry.portable]
+    if not portable_entries:
+        return None
+
+    canonical_spec = skill_spec.get("canonical") or {}
+    canonical_platform = canonical_spec.get("platform")
+    canonical_root_label = canonical_spec.get("root_label")
+    exact_matches = [
+        entry
+        for entry in portable_entries
+        if entry.platform == canonical_platform and entry.root_label == canonical_root_label
+    ]
+    if exact_matches:
+        return sorted(
+            exact_matches,
+            key=lambda entry: (0 if not entry.symlinked else 1, -entry.latest_mtime_ns),
+        )[0]
+
+    platform_matches = [
+        entry for entry in portable_entries if entry.platform == canonical_platform
+    ]
+    if platform_matches:
+        return sorted(
+            platform_matches,
+            key=lambda entry: (0 if not entry.symlinked else 1, -entry.latest_mtime_ns),
+        )[0]
+
+    canonical = choose_canonical_source(
+        portable_entries, source_order, "prefer-latest", allow_specific=True
+    )
+    if canonical is None:
+        return None
+
+    resolved_path = canonical["resolved_path"]
+    return next(
+        (entry for entry in portable_entries if str(entry.resolved_path) == resolved_path),
+        portable_entries[0],
+    )
+
+
+def build_import_plan(
+    manifest: dict,
+    roots: list[RootSpec],
+    entries: list[SkillEntry],
+    source_order: list[str],
+) -> dict:
+    grouped_entries: dict[str, list[SkillEntry]] = defaultdict(list)
+    for entry in entries:
+        grouped_entries[entry.name].append(entry)
+
+    primary_roots = {
+        root.platform: root
+        for root in roots
+        if root.link_target and root.platform in PRIMARY_PLATFORMS
+    }
+
+    operations: list[dict] = []
+    issues: list[dict] = []
+    unchanged: list[dict] = []
+
+    for skill_spec in manifest["skills"]:
+        if not skill_spec.get("importable"):
+            issues.append(
+                {
+                    "type": "not_importable",
+                    "name": skill_spec["name"],
+                    "detail": skill_spec["status"],
+                }
+            )
+            continue
+
+        source_entry = find_manifest_source_entry(skill_spec, grouped_entries, source_order)
+        if source_entry is None:
+            issues.append(
+                {
+                    "type": "missing_source",
+                    "name": skill_spec["name"],
+                    "detail": skill_spec.get("canonical", {}).get("platform"),
+                }
+            )
+            continue
+
+        source_target = str(source_entry.resolved_path)
+        source_path = str(source_entry.path)
+        for platform in skill_spec.get("desired_platforms", []):
+            if platform not in PRIMARY_PLATFORMS:
+                continue
+
+            root = primary_roots.get(platform)
+            if root is None:
+                issues.append(
+                    {
+                        "type": "missing_root",
+                        "name": skill_spec["name"],
+                        "detail": platform,
+                    }
+                )
+                continue
+
+            destination = root.path / skill_spec["name"]
+            destination_key = str(destination)
+            if destination_key == source_path or str(destination.resolve(strict=False)) == source_target:
+                unchanged.append(
+                    {
+                        "name": skill_spec["name"],
+                        "platform": platform,
+                        "path": destination_key,
+                        "state": "already_canonical",
+                    }
+                )
+                continue
+
+            if destination.exists() or destination.is_symlink():
+                try:
+                    current_target = str(destination.resolve(strict=False))
+                except OSError:
+                    current_target = destination_key
+                if current_target == source_target:
+                    unchanged.append(
+                        {
+                            "name": skill_spec["name"],
+                            "platform": platform,
+                            "path": destination_key,
+                            "state": "already_linked",
+                        }
+                    )
+                    continue
+                operations.append(
+                    {
+                        "action": "replace_with_symlink",
+                        "name": skill_spec["name"],
+                        "strategy": manifest.get("strategy", "import-manifest"),
+                        "path": destination_key,
+                        "target_path": source_target,
+                        "target_is_directory": True,
+                    }
+                )
+                continue
+
+            operations.append(
+                {
+                    "action": "create_symlink",
+                    "name": skill_spec["name"],
+                    "strategy": manifest.get("strategy", "import-manifest"),
+                    "path": destination_key,
+                    "target_path": source_target,
+                    "target_is_directory": True,
+                }
+            )
+
+    return {
+        "kind": manifest["kind"],
+        "version": manifest["version"],
+        "generated_at": manifest["generated_at"],
+        "strategy": manifest["strategy"],
+        "adopt_root": manifest.get("adopt_root"),
+        "summary": {
+            "recorded_skills": manifest["summary"]["total_skills"],
+            "importable_skills": manifest["summary"]["importable_skills"],
+            "desired_placements": manifest["summary"]["desired_placements"],
+            "planned_operations": len(operations),
+            "unchanged": len(unchanged),
+            "issues": len(issues),
+        },
+        "operations": operations,
+        "issues": issues,
+        "unchanged": unchanged,
+    }
 
 
 def format_recommendations(report: dict) -> list[str]:
@@ -1276,6 +1562,59 @@ def format_restore_text(manifest: dict, apply: bool) -> str:
     return "\n".join(lines).strip()
 
 
+def format_export_text(manifest: dict, manifest_path: Path) -> str:
+    lines = [
+        f"Exported manifest: {manifest_path}",
+        f"Generated at: {manifest['generated_at']}",
+        f"Skills: {manifest['summary']['total_skills']}",
+        f"Importable skills: {manifest['summary']['importable_skills']}",
+        f"Desired placements: {manifest['summary']['desired_placements']}",
+        f"Strategy: {manifest['strategy']}",
+    ]
+    if manifest.get("adopt_root"):
+        lines.append(f"Adopt root: {manifest['adopt_root']}")
+    return "\n".join(lines)
+
+
+def format_import_text(plan: dict, apply: bool, manifest_path: Path) -> str:
+    lines = [
+        f"Import manifest: {manifest_path}",
+        f"Generated at: {plan['generated_at']}",
+        f"Recorded skills: {plan['summary']['recorded_skills']}",
+        f"Planned operations: {plan['summary']['planned_operations']}",
+        f"Unchanged placements: {plan['summary']['unchanged']}",
+        f"Issues: {plan['summary']['issues']}",
+        "",
+        "IMPORT ISSUES",
+    ]
+
+    if plan["issues"]:
+        for issue in plan["issues"]:
+            lines.append(f"- {issue['type']} {issue['name']}: {issue['detail']}")
+    else:
+        lines.append("- none")
+
+    lines.extend(["", "IMPORTED LINKS" if apply else "PLANNED IMPORT"])
+    if plan["operations"]:
+        for operation in plan["operations"]:
+            verb = "replace" if operation["action"] == "replace_with_symlink" else "create"
+            lines.append(f"- {verb} {operation['name']}: {operation['path']} -> {operation['target_path']}")
+    else:
+        lines.append("- none")
+
+    if apply and plan.get("run"):
+        lines.extend(
+            [
+                "",
+                "BACKUP RUN",
+                f"- run_id: {plan['run']['run_id']}",
+                f"- backup_root: {plan['run']['backup_root']}",
+                f"- restore: python3 {SCRIPT_PATH} --restore {plan['run']['run_id']}",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
 def format_diff_text(diff_report: dict) -> str:
     lines = [
         f"Skill: {diff_report['skill']}",
@@ -1323,6 +1662,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--apply", action="store_true", help="Execute the requested sync or dedupe plan")
     parser.add_argument("--dry-run", action="store_true", help="Explicitly request preview mode")
     parser.add_argument("--restore", help="Restore a previous backup run id or 'latest'")
+    parser.add_argument("--export-manifest", help="Write a portable layout manifest for cross-machine skill convergence")
+    parser.add_argument("--import-manifest", help="Preview or apply a previously exported layout manifest")
     parser.add_argument(
         "--backup-root",
         default=str(env_path("SKILL_SYNC_BACKUP_ROOT", str(Path.home() / ".skill-sync" / "backups"))),
@@ -1354,8 +1695,10 @@ def main() -> int:
     sync_missing = args.sync_missing or bool(adopt_root)
     dedupe = args.dedupe or bool(adopt_root)
 
-    if args.apply and not (sync_missing or dedupe):
-        raise SystemExit("--apply requires --sync-missing, --dedupe, or --adopt-root")
+    if args.apply and not (sync_missing or dedupe or args.import_manifest):
+        raise SystemExit(
+            "--apply requires --sync-missing, --dedupe, --adopt-root, or --import-manifest"
+        )
 
     workdir = Path(args.workdir).expanduser().resolve()
     roots = build_root_specs(workdir)
@@ -1367,6 +1710,33 @@ def main() -> int:
         skill_filter.add(args.diff)
 
     entries = discover_skills(roots, skill_filter)
+
+    if args.import_manifest:
+        manifest_path = Path(args.import_manifest).expanduser().resolve()
+        manifest = load_layout_manifest(manifest_path)
+        import_source_order = reorder_source_order(
+            ",".join(manifest.get("source_order", args.source_order)),
+            manifest.get("adopt_root") or args.prefer_root,
+        )
+        import_plan = build_import_plan(
+            manifest=manifest,
+            roots=roots,
+            entries=entries,
+            source_order=import_source_order,
+        )
+        if args.apply and not args.dry_run:
+            applied = apply_operations(import_plan["operations"], backup_root=backup_root)
+            if applied:
+                import_plan["run"] = {
+                    "run_id": applied["run_id"],
+                    "backup_root": applied["backup_root"],
+                }
+
+        if args.format == "json":
+            print(json.dumps(import_plan, indent=2, ensure_ascii=False))
+        else:
+            print(format_import_text(import_plan, apply=args.apply and not args.dry_run, manifest_path=manifest_path))
+        return 0
 
     if args.diff:
         diff_report = build_skill_diff(entries, args.diff, source_order, args.strategy)
@@ -1384,6 +1754,17 @@ def main() -> int:
         adopt_root=adopt_root,
     )
     report = filter_report_groups(report, parse_status_filters(args.status))
+
+    if args.export_manifest:
+        manifest_path = Path(args.export_manifest).expanduser().resolve()
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        export_manifest = build_layout_manifest(report)
+        write_json(manifest_path, export_manifest)
+        if args.format == "json":
+            print(json.dumps(export_manifest, indent=2, ensure_ascii=False))
+        else:
+            print(format_export_text(export_manifest, manifest_path))
+        return 0
 
     if args.apply and not args.dry_run:
         operations = build_operations(report, sync_missing=sync_missing, dedupe=dedupe)

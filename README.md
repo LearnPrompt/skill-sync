@@ -1,6 +1,6 @@
 # Skill Sync
 
-One source of truth for all your local AI agent skills.
+One source of truth for local AI agent skills.
 
 `skill-sync` turns a messy multi-agent setup into a maintainable local skill system:
 
@@ -10,6 +10,7 @@ One source of truth for all your local AI agent skills.
 - pick a canonical source automatically
 - replace duplicate copies with symlinks
 - back up every replaced install so you can restore it later
+- export a portable layout manifest and recreate that topology on another machine
 
 ## Who This Is For
 
@@ -89,6 +90,29 @@ Scan everything:
 
 ```bash
 python3 scripts/skill_sync.py
+```
+
+Export the current topology as a migration manifest:
+
+```bash
+python3 scripts/skill_sync.py \
+  --adopt-root agents \
+  --export-manifest .skill-sync/agent-layout.json
+```
+
+Preview that layout on another machine:
+
+```bash
+python3 scripts/skill_sync.py \
+  --import-manifest .skill-sync/agent-layout.json
+```
+
+Apply it with backups:
+
+```bash
+python3 scripts/skill_sync.py \
+  --import-manifest .skill-sync/agent-layout.json \
+  --apply
 ```
 
 Show only shared and host-specific skills:
@@ -173,6 +197,18 @@ Use `--diff <skill>` to compare portable installs against the selected canonical
 ### Root Adoption
 
 Use `--adopt-root agents` or another root to preview or apply a convergence plan around one canonical host.
+
+### Cross-Machine Migration
+
+Use `--export-manifest` to save the desired symlink topology and `--import-manifest` to recreate that topology elsewhere.
+
+The manifest records:
+
+- which skills are portable enough to converge
+- which host should act as canonical source
+- which primary hosts should expose each skill
+
+The manifest does not copy skill payloads themselves. On the target machine, the canonical source still needs to exist locally.
 
 ## About `~/.agents/skills`
 
