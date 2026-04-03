@@ -53,7 +53,7 @@ It decides which copy should win based on strategy, timestamps, shared roots, an
 It can turn duplicates into symlinks and centralize ownership without destructive blind replacement.
 
 4. Reversible operations  
-Every dedupe run writes a restoreable backup manifest under `~/.skill-sync/backups`.
+Every dedupe run writes a restorable backup manifest under `~/.skill-sync/backups`.
 
 ## What Makes It Different
 
@@ -81,7 +81,7 @@ Compared with generic local skill managers, `skill-sync` is specifically about:
 Install into your main hosts:
 
 ```bash
-git clone git@github.com:LearnPrompt/skill-sync.git
+git clone https://github.com/LearnPrompt/skill-sync.git
 cd skill-sync
 ./install.sh --codex --claude --openclaw --agents
 ```
@@ -165,6 +165,15 @@ RECOMMENDED ACTIONS
 ```
 
 The point is not just to list skills. The point is to tell you what to do next.
+
+## Validation
+
+Run the fast local checks:
+
+```bash
+python3 -m py_compile scripts/skill_sync.py
+python3 -m unittest discover -s tests -q
+```
 
 ## Status Model
 

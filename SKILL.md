@@ -1,129 +1,94 @@
 ---
 name: skill-sync
-description: One source of truth for local AI agent skills: audit Codex, Claude, OpenClaw, OpenCode, workspace skills, and shared roots; score hygiene, diff conflicting installs, deduplicate into one canonical source, and migrate the same layout across machines with restoreable backups.
+description: One source of truth for local AI agent skills: audit Codex, Claude, OpenClaw, OpenCode, workspace skills, and shared roots; score hygiene, diff conflicting installs, deduplicate into one canonical source, and migrate the same layout across machines with restorable backups.
 homepage: https://github.com/LearnPrompt/skill-sync
 ---
 
 # Skill Sync
 
-## Overview
+## When To Use
 
-Use this skill when you want one lightweight workflow for:
+Use this skill when the user wants to:
 
-- discovering skills installed across multiple AI agent hosts on the same machine
-- seeing which skills are already shared by symlink
-- finding duplicated installs that can be consolidated
-- selecting one canonical source when the same portable skill exists in multiple places
-- identifying platform-specific skills that should stay local
-- safely filling missing installs with symlinks instead of copying files
-- backing up replaced installs and restoring them later if needed
-- exporting a portable layout manifest and importing it on another machine
+- scan local skills across Codex, Claude, OpenClaw, OpenCode, workspace `./skills`, and shared roots
+- see which skills are `shared`, `duplicate`, `compatible`, `specific`, or `mixed`
+- choose one canonical source and replace duplicate copies with symlinks
+- preview or apply convergence onto one preferred root such as `~/.agents/skills`
+- export a portable layout manifest and import the same topology on another machine
+- restore a previous dedupe or import run
 
-The workflow is intentionally conservative:
+Do not use this skill when the task is only about one host and no cross-host comparison or symlink management is needed.
 
-- it scans first
-- it reports before mutating anything
-- it only auto-links portable directory-based skills with `SKILL.md`
-- it never overwrites an existing destination path without first moving it to backup storage
+## Fast Path
 
-## Quick Start
-
-Run the scanner from any directory:
+Scan the machine and get the hygiene score plus recommended actions:
 
 ```bash
 python3 scripts/skill_sync.py
 ```
 
-Show the hygiene score plus recommended actions:
+List only shared and host-specific skills:
 
 ```bash
-python3 scripts/skill_sync.py
+python3 scripts/skill_sync.py --status shared,specific --list-names
 ```
 
-Preview missing symlink opportunities for one skill:
+Inspect one conflicting portable skill:
 
 ```bash
-python3 scripts/skill_sync.py \
-  --skill playwright \
-  --sync-missing
+python3 scripts/skill_sync.py --diff rapid-ocr
 ```
 
-Preview canonical dedupe using the safest strategy:
+Preview safe dedupe:
 
 ```bash
-python3 scripts/skill_sync.py \
-  --dedupe \
-  --strategy strict
+python3 scripts/skill_sync.py --dedupe --strategy strict
 ```
 
-Apply canonical dedupe while preserving backups:
+Preview a single-root convergence plan:
 
 ```bash
-python3 scripts/skill_sync.py \
-  --dedupe \
-  --strategy prefer-latest \
-  --apply
+python3 scripts/skill_sync.py --adopt-root agents
 ```
 
-Apply missing symlinks without replacing existing installs:
+Apply convergence with backups:
 
 ```bash
-python3 scripts/skill_sync.py \
-  --sync-missing \
-  --strategy strict \
-  --apply
+python3 scripts/skill_sync.py --adopt-root agents --apply
 ```
 
-Restore a previous run:
+Restore the latest run:
 
 ```bash
-python3 scripts/skill_sync.py \
-  --restore latest
+python3 scripts/skill_sync.py --restore latest
+python3 scripts/skill_sync.py --restore latest --apply
 ```
 
-Preview a one-root convergence plan:
+## Workflow
 
-```bash
-python3 scripts/skill_sync.py \
-  --adopt-root agents
-```
+1. Scan first.
+   Run `python3 scripts/skill_sync.py` and read the hygiene score and recommended actions.
+2. Review risky groups before mutation.
+   Use `--status compatible --list-names`, `--status mixed --list-names`, and `--diff <skill>`.
+3. Preview convergence.
+   Use `--dedupe --strategy strict` for identical groups, or `--adopt-root <platform>` to converge around one root.
+4. Apply only when the plan looks right.
+   Add `--apply` to execute symlink creation or replacement.
+5. Export or import machine layouts when needed.
+   Use `--export-manifest` and `--import-manifest` for cross-machine reuse.
+6. Restore from backup if needed.
+   Use `--restore <run-id|latest>` and add `--apply` to roll back.
 
-Export a migration manifest:
+## Safety Rules
 
-```bash
-python3 scripts/skill_sync.py \
-  --adopt-root agents \
-  --export-manifest .skill-sync/agent-layout.json
-```
+- The script always scans and reports before mutation.
+- It only auto-links portable directory-based skills that contain `SKILL.md`.
+- It never overwrites an existing destination without first moving it into `~/.skill-sync/backups/<run-id>/originals/...`.
+- `--strategy strict` only dedupes identical portable skills.
+- `--strategy prefer-latest` and `--strategy trust-high` may select the newest portable copy when content differs.
+- `--restore latest --apply` replays the last backup manifest in reverse.
 
-Preview or apply that topology on another machine:
-
-```bash
-python3 scripts/skill_sync.py \
-  --import-manifest .skill-sync/agent-layout.json
-
-python3 scripts/skill_sync.py \
-  --import-manifest .skill-sync/agent-layout.json \
-  --apply
-```
-
-Inspect a compatible skill with file-level diff:
-
-```bash
-python3 scripts/skill_sync.py \
-  --diff rapid-ocr
-```
-
-Get machine-readable output:
-
-```bash
-python3 scripts/skill_sync.py \
-  --format json
-```
-
-## What The Script Detects
-
-The script scans these host roots when they exist:
+## Roots Scanned
 
 - `<current-workdir>/skills`
 - `~/.codex/skills`
@@ -134,67 +99,12 @@ The script scans these host roots when they exist:
 - `~/.openclaw/skills`
 - `~/.openclaw/extensions/*/skills`
 
-It classifies each discovered skill into one of four states:
+## Status Model
 
 - `shared`: the same real directory is visible from multiple hosts, usually through symlinks
 - `duplicate`: multiple hosts have the same portable skill content, but not via the same real path yet
 - `compatible`: multiple hosts have portable `SKILL.md` skills with the same name, but different content
 - `specific`: the skill appears on only one host
 - `mixed`: the same skill name exists on multiple hosts, but with different formats or incompatible content
-
-The report also computes:
-
-- a hygiene score
-- recommended next actions
-- a canonical source preference order
-- dedupe and propagation plans
-
-## Strategy Rules
-
-When `--strategy strict` is used:
-
-- only fully identical portable skills are deduped
-- `compatible` groups are reported, not replaced
-
-When `--strategy prefer-latest` is used:
-
-- any all-portable `SKILL.md` group can get a canonical source
-- the newest real path wins
-- older duplicates are moved to backup storage before replacement
-
-When `--strategy trust-high` is used:
-
-- canonical source selection is the same as `prefer-latest`
-- replacement can also target non-primary scanned roots such as vendor/plugin skill directories
-
-## Execution Rules
-
-When `--sync-missing` is enabled, the script:
-
-- picks one source install using a host priority order
-- only considers groups eligible under the current strategy
-- only targets primary host roots, not nested vendor/plugin bundles
-- skips any host that already has the skill somewhere
-- skips destinations that already exist on disk
-
-When `--dedupe` is enabled, the script:
-
-- chooses one canonical source
-- moves each replaced install to `~/.skill-sync/backups/<run-id>/originals/...`
-- creates a symlink at the original path
-- writes `manifest.json` so the run can be restored later
-
-When `--export-manifest` is enabled, the script:
-
-- records the canonical source choice for each portable skill
-- records which primary hosts should expose each skill
-- writes a portable JSON manifest that can be imported on another machine
-
-When `--import-manifest` is enabled, the script:
-
-- finds matching local canonical sources on the current machine
-- previews missing roots and missing sources before mutating anything
-- creates or replaces host installs with symlinks to match the manifest layout
-- reuses the same backup-and-restore flow as local dedupe
 
 If you need the detection details or compatibility notes, read [references/compatibility.md](./references/compatibility.md).
