@@ -1,38 +1,68 @@
-# skill-sync
+# Skill Sync
 
-Unify local AI Agent skills across Codex, Claude, OpenClaw, OpenCode, and shared skill directories.
+One source of truth for all your local AI agent skills.
 
-`skill-sync` scans the skill roots on your machine, tells you which skills are already shared, which are duplicated, which are compatible-but-different, and can safely converge duplicate installs into one canonical source plus symlinks.
+`skill-sync` turns a messy multi-agent setup into a maintainable local skill system:
 
-## Why
+- scan skills across Codex, Claude, OpenClaw, OpenCode, workspace `./skills`, and shared agent roots
+- score the hygiene of your current setup
+- show shared, duplicate, compatible, and host-specific skills
+- pick a canonical source automatically
+- replace duplicate copies with symlinks
+- back up every replaced install so you can restore it later
 
-When you use multiple AI coding agents, the same skill often ends up installed several times:
+## Who This Is For
 
-- one copy in `~/.codex/skills`
-- another in `~/.claude/skills`
-- another in `~/.openclaw/skills`
-- sometimes a shared copy in `~/.agents/skills`
+`skill-sync` is built for people who:
 
-That creates three problems:
+- use more than one AI coding agent
+- install lots of local skills
+- keep a shared skill library in `~/.agents/skills`
+- move between machines or rebuild environments often
+- want one canonical skill source instead of version drift everywhere
 
-- updates drift across platforms
-- reinstalling the same skill wastes time
-- it becomes hard to tell which copy is the real source of truth
+## The Problem
 
-`skill-sync` fixes that by turning repeated local installs into:
+In a real machine, the same skill often appears in multiple places:
 
-- one canonical source
-- multiple symlinks
-- a reversible backup trail
+- `~/.codex/skills`
+- `~/.claude/skills`
+- `~/.openclaw/skills`
+- `~/.config/opencode/skills`
+- `~/.agents/skills`
+- `<workspace>/skills`
 
-## What It Does
+That creates drift:
 
-- Discover skills across multiple local AI agent hosts
-- Classify each skill as `shared`, `duplicate`, `compatible`, `specific`, or `mixed`
-- Plan missing symlink installs
-- Choose a canonical source automatically
-- Replace duplicate copies with symlinks
-- Back up replaced installs into a dedicated restoreable run directory
+- one copy gets updated, another stays stale
+- the same skill gets installed repeatedly
+- nobody remembers which copy is the real source of truth
+
+## The Product Promise
+
+`skill-sync` gives you four things that basic skill managers usually do not:
+
+1. Cross-host discovery  
+It scans all the common local roots at once instead of showing one host in isolation.
+
+2. Canonical source selection  
+It decides which copy should win based on strategy, timestamps, shared roots, and your preferred source order.
+
+3. Safe convergence  
+It can turn duplicates into symlinks and centralize ownership without destructive blind replacement.
+
+4. Reversible operations  
+Every dedupe run writes a restoreable backup manifest under `~/.skill-sync/backups`.
+
+## What Makes It Different
+
+Compared with generic local skill managers, `skill-sync` is specifically about:
+
+- cross-agent skill hygiene
+- canonical source adoption
+- symlink-based dedupe
+- compatible skill diffing
+- reversible local convergence
 
 ## Supported Skill Roots
 
@@ -45,91 +75,50 @@ That creates three problems:
 - `~/.openclaw/skills`
 - `~/.openclaw/extensions/*/skills`
 
-### About `~/.agents/skills`
+## Quick Start
 
-If you already use `~/.agents/skills` as a shared skill library, that is expected and works well with `skill-sync`.
-
-By default it affects behavior in two ways:
-
-- it participates in discovery like every other root
-- it is first in the default source priority, so shared agent copies often become the canonical source when there is a tie
-
-This does not break `skill-sync`. It usually improves convergence, because one shared directory is a good source of truth. If you want a different preference order, use:
-
-```bash
-python3 scripts/skill_sync.py --source-order workspace,codex,claude,agents,opencode,openclaw
-```
-
-## Install
-
-Clone the repo and install by symlink:
+Install into your main hosts:
 
 ```bash
 git clone git@github.com:LearnPrompt/skill-sync.git
 cd skill-sync
-./install.sh --codex
-```
-
-Install into multiple hosts at once:
-
-```bash
 ./install.sh --codex --claude --openclaw --agents
 ```
 
-See all install options:
-
-```bash
-./install.sh --help
-```
-
-## Quick Start
-
-Scan local skills:
+Scan everything:
 
 ```bash
 python3 scripts/skill_sync.py
 ```
 
-Scan a specific workspace and include its local `skills/` directory:
-
-```bash
-python3 scripts/skill_sync.py --workdir /path/to/workspace
-```
-
-Only list shared skills:
-
-```bash
-python3 scripts/skill_sync.py --status shared --list-names
-```
-
-Only list host-specific skills:
-
-```bash
-python3 scripts/skill_sync.py --status specific --list-names
-```
-
-List shared and host-specific skills together:
+Show only shared and host-specific skills:
 
 ```bash
 python3 scripts/skill_sync.py --status shared,specific --list-names
 ```
 
-Preview dedupe with the safest policy:
+Inspect a compatibility conflict:
+
+```bash
+python3 scripts/skill_sync.py --diff rapid-ocr
+```
+
+Preview safe dedupe:
 
 ```bash
 python3 scripts/skill_sync.py --dedupe --strategy strict
 ```
 
-Dedupe by keeping the newest portable version:
+Preview a full convergence onto the shared agent root:
 
 ```bash
-python3 scripts/skill_sync.py --dedupe --strategy prefer-latest --apply
+python3 scripts/skill_sync.py --adopt-root agents
 ```
 
-Plan missing installs using the same canonical source logic:
+Apply that convergence:
 
 ```bash
-python3 scripts/skill_sync.py --sync-missing --strategy prefer-latest
+python3 scripts/skill_sync.py --adopt-root agents --apply
 ```
 
 Restore the latest run:
@@ -139,43 +128,103 @@ python3 scripts/skill_sync.py --restore latest
 python3 scripts/skill_sync.py --restore latest --apply
 ```
 
-## How It Classifies Skills
+## Example Output
+
+```text
+Discovered 99 unique skills from 183 installs.
+Hygiene score: 46/100 (risky) | shared_ratio=38.4% | review=2 | duplicates=20
+
+RECOMMENDED ACTIONS
+- [high] Review 2 compatible skills before dedupe
+- [medium] Deduplicate 20 identical multi-host skills
+- [low] Preview a single-root convergence plan
+```
+
+The point is not just to list skills. The point is to tell you what to do next.
+
+## Status Model
 
 - `shared`: multiple hosts already point to the same real path
-- `duplicate`: multiple portable installs have identical content but different real paths
-- `compatible`: multiple portable installs share the same skill name but differ in content
-- `specific`: only found on one host
-- `mixed`: same name exists, but with incompatible formats or host-specific structure
+- `duplicate`: portable installs match exactly but live at different real paths
+- `compatible`: portable installs share a name but differ in content
+- `specific`: found on only one host
+- `mixed`: same name exists with incompatible formats or host-specific layouts
 
-## Strategies
+## Strategy Model
 
 - `strict`: only dedupe identical portable skills
-- `prefer-latest`: for portable duplicates with differences, keep the newest real path
-- `trust-high`: same canonical selection as `prefer-latest`, but allows more aggressive replacement of scanned roots
+- `prefer-latest`: keep the newest portable copy when content differs
+- `trust-high`: same canonical logic as `prefer-latest`, but allows more aggressive replacement of scanned roots
+
+## Superpowers
+
+### Hygiene Score
+
+Every scan computes a rough operational score so you can tell whether your local skill ecosystem is clean or drifting.
+
+### Recommended Actions
+
+The report suggests next steps instead of dumping raw data only.
+
+### File-Level Diff
+
+Use `--diff <skill>` to compare portable installs against the selected canonical source and see which files changed, were added, or removed.
+
+### Root Adoption
+
+Use `--adopt-root agents` or another root to preview or apply a convergence plan around one canonical host.
+
+## About `~/.agents/skills`
+
+If you already use `~/.agents/skills` as a shared skill library, that works especially well with `skill-sync`.
+
+By default:
+
+- it participates in discovery
+- it often becomes the canonical source because it is first in the default source order
+
+That is usually desirable. If you want a different preference order:
+
+```bash
+python3 scripts/skill_sync.py --source-order workspace,codex,claude,agents,opencode,openclaw
+```
 
 ## Backup Model
 
-Applied runs are stored under:
+Applied runs are written to:
 
 ```text
 ~/.skill-sync/backups/<run-id>/
 ```
 
-Each run includes:
+Each run stores:
 
 - `manifest.json`
 - `originals/...`
-- `latest` symlink
+- `latest`
 
-That means dedupe is reversible. Replaced directories are moved before a symlink is created in their original location.
+This makes dedupe reversible. A real directory is moved to backup before a symlink replaces it.
 
-## Example Workflow
+## Install Script
 
-1. Install the skill into your main hosts with `./install.sh`.
-2. Run `python3 scripts/skill_sync.py` to inspect the current state.
-3. Run `python3 scripts/skill_sync.py --dedupe --strategy strict` to preview safe convergences.
-4. If you want newest-wins behavior, run `python3 scripts/skill_sync.py --dedupe --strategy prefer-latest --apply`.
-5. If needed, restore with `python3 scripts/skill_sync.py --restore latest --apply`.
+`install.sh` supports:
+
+- `--codex`
+- `--agents`
+- `--claude`
+- `--opencode`
+- `--openclaw`
+- `--all`
+- `--copy`
+- `--force`
+
+Examples:
+
+```bash
+./install.sh --all
+./install.sh --codex --claude --force
+./install.sh --openclaw --copy
+```
 
 ## Project Layout
 

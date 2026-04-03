@@ -1,6 +1,6 @@
 ---
 name: skill-sync
-description: Discover locally installed skills across Codex, Claude, OpenClaw, OpenCode, and shared agent libraries; classify which skills are already shared, duplicated but linkable, or platform-specific; optionally create missing symlinks for portable SKILL.md-based skills without overwriting existing installs.
+description: Audit and converge local skills across Codex, Claude, OpenClaw, OpenCode, workspace skills, and shared agent libraries; compute a hygiene score, classify shared vs duplicate vs compatible skills, diff conflicting installs, and safely deduplicate into one canonical source with restoreable backups.
 homepage: https://github.com/LearnPrompt/skill-sync
 ---
 
@@ -28,6 +28,12 @@ The workflow is intentionally conservative:
 ## Quick Start
 
 Run the scanner from any directory:
+
+```bash
+python3 scripts/skill_sync.py
+```
+
+Show the hygiene score plus recommended actions:
 
 ```bash
 python3 scripts/skill_sync.py
@@ -74,6 +80,20 @@ python3 scripts/skill_sync.py \
   --restore latest
 ```
 
+Preview a one-root convergence plan:
+
+```bash
+python3 scripts/skill_sync.py \
+  --adopt-root agents
+```
+
+Inspect a compatible skill with file-level diff:
+
+```bash
+python3 scripts/skill_sync.py \
+  --diff rapid-ocr
+```
+
 Get machine-readable output:
 
 ```bash
@@ -101,6 +121,13 @@ It classifies each discovered skill into one of four states:
 - `compatible`: multiple hosts have portable `SKILL.md` skills with the same name, but different content
 - `specific`: the skill appears on only one host
 - `mixed`: the same skill name exists on multiple hosts, but with different formats or incompatible content
+
+The report also computes:
+
+- a hygiene score
+- recommended next actions
+- a canonical source preference order
+- dedupe and propagation plans
 
 ## Strategy Rules
 
