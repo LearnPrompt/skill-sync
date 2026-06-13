@@ -19,6 +19,7 @@ Targets:
   --codex       Install into ~/.codex/skills
   --agents      Install into ~/.agents/skills
   --claude      Install into ~/.claude/skills
+  --hermes      Install into ~/.hermes/skills
   --opencode    Install into ~/.config/opencode/skills
   --openclaw    Install into ~/.openclaw/skills
   --all         Install into all primary targets above
@@ -51,6 +52,7 @@ target_root() {
     codex) printf '%s\n' "${HOME}/.codex/skills" ;;
     agents) printf '%s\n' "${HOME}/.agents/skills" ;;
     claude) printf '%s\n' "${HOME}/.claude/skills" ;;
+    hermes) printf '%s\n' "${HOME}/.hermes/skills" ;;
     opencode) printf '%s\n' "${HOME}/.config/opencode/skills" ;;
     openclaw) printf '%s\n' "${HOME}/.openclaw/skills" ;;
     *)
@@ -65,12 +67,14 @@ while [[ $# -gt 0 ]]; do
     --codex) append_target "codex" ;;
     --agents) append_target "agents" ;;
     --claude) append_target "claude" ;;
+    --hermes) append_target "hermes" ;;
     --opencode) append_target "opencode" ;;
     --openclaw) append_target "openclaw" ;;
     --all)
       append_target "codex"
       append_target "agents"
       append_target "claude"
+      append_target "hermes"
       append_target "opencode"
       append_target "openclaw"
       ;;

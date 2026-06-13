@@ -6,6 +6,8 @@ Examples:
     python3 scripts/skill_sync.py
     python3 scripts/skill_sync.py --status shared,specific --list-names
     python3 scripts/skill_sync.py --diff rapid-ocr
+    python3 scripts/skill_sync.py --record-baseline
+    python3 scripts/skill_sync.py --check-drift
     python3 scripts/skill_sync.py --dedupe --strategy strict
     python3 scripts/skill_sync.py --adopt-root agents
     python3 scripts/skill_sync.py --adopt-root agents --apply
@@ -35,12 +37,14 @@ IGNORE_NAMES = {
     "logs",
     ".pytest_cache",
 }
-PRIMARY_PLATFORMS = ("agents", "codex", "claude", "opencode", "openclaw")
+PRIMARY_PLATFORMS = ("agents", "codex", "claude", "hermes", "opencode", "openclaw")
 ALL_PLATFORMS = PRIMARY_PLATFORMS + ("workspace",)
 STATUS_ORDER = ("shared", "duplicate", "compatible", "specific", "mixed")
 SCRIPT_PATH = Path(__file__).resolve()
 RECOMMENDATION_LIMIT = 6
 LAYOUT_MANIFEST_KIND = "skill-sync-layout"
+BASELINE_STORE_KIND = "skill-sync-baselines"
+DRIFT_STATES = ("pristine", "dirty", "local-only")
 
 
 @dataclass(frozen=True)
@@ -105,6 +109,12 @@ def build_root_specs(workdir: Path) -> list[RootSpec]:
             link_target=True,
         ),
         RootSpec(
+            platform="hermes",
+            label="home",
+            path=env_path("SKILL_SYNC_HERMES_ROOT", str(home / ".hermes" / "skills")),
+            link_target=True,
+        ),
+        RootSpec(
             platform="opencode",
             label="home",
             path=env_path(
@@ -157,7 +167,53 @@ def build_root_specs(workdir: Path) -> list[RootSpec]:
     return roots
 
 
+def is_definitive_skill_entry(path: Path) -> bool:
+    if path.is_file() and path.suffix == ".skill":
+        return True
+
+    if not path.is_dir():
+        return False
+    if (path / "SKILL.md").is_file() or (path / "_meta.json").is_file():
+        return True
+    return any(path.glob("*.skill"))
+
+
+def iter_hermes_entries(root: RootSpec) -> list[Path]:
+    try:
+        children = sorted(root.path.iterdir(), key=lambda item: item.name.lower())
+    except OSError:
+        return []
+
+    entries: list[Path] = []
+    seen: set[Path] = set()
+    for child in children:
+        if child.name.startswith("."):
+            continue
+        if is_definitive_skill_entry(child):
+            entries.append(child)
+            seen.add(child)
+            continue
+        if not child.is_dir():
+            continue
+
+        try:
+            nested_children = sorted(child.iterdir(), key=lambda item: item.name.lower())
+        except OSError:
+            continue
+        for nested in nested_children:
+            if nested.name.startswith(".") or nested in seen:
+                continue
+            if is_definitive_skill_entry(nested):
+                entries.append(nested)
+                seen.add(nested)
+
+    return entries
+
+
 def iter_root_entries(root: RootSpec) -> Iterable[Path]:
+    if root.platform == "hermes":
+        return iter_hermes_entries(root)
+
     try:
         children = sorted(root.path.iterdir(), key=lambda item: item.name.lower())
     except OSError:
@@ -499,11 +555,30 @@ def can_replace_entry(entry: SkillEntry, strategy: str) -> bool:
     return entry.portable and (entry.link_target or strategy == "trust-high")
 
 
+def is_dirty_replacement(
+    entry: SkillEntry, source: dict, baseline: dict | None
+) -> bool:
+    """A replacement is dirty when its content matches neither the recorded
+    baseline nor the selected canonical source, i.e. it carries local edits
+    that a symlink replacement would hide."""
+    if baseline is None:
+        return False
+    baseline_hash = baseline.get("content_hash")
+    if baseline_hash is None or entry.content_hash is None:
+        return False
+    if entry.content_hash == baseline_hash:
+        return False
+    return entry.content_hash != source.get("content_hash")
+
+
 def build_dedupe_plan(
     grouped_entries: dict[str, list[SkillEntry]],
     source_order: list[str],
     strategy: str,
+    baselines: dict | None = None,
+    allow_dirty: bool = False,
 ) -> list[dict]:
+    baselines = baselines or {}
     plans: list[dict] = []
 
     for name, entries in sorted(grouped_entries.items()):
@@ -513,23 +588,27 @@ def build_dedupe_plan(
         if source is None:
             continue
 
+        baseline = baselines.get(name)
         replacements: list[dict] = []
+        skipped_dirty: list[dict] = []
         for entry in sorted(entries, key=lambda item: (item.platform, item.root_label, str(item.path))):
             if not can_replace_entry(entry, strategy):
                 continue
             if str(entry.resolved_path) == source["resolved_path"]:
                 continue
-            replacements.append(
-                {
-                    "platform": entry.platform,
-                    "root_label": entry.root_label,
-                    "path": str(entry.path),
-                    "resolved_path": str(entry.resolved_path),
-                    "symlinked": entry.symlinked,
-                }
-            )
+            record = {
+                "platform": entry.platform,
+                "root_label": entry.root_label,
+                "path": str(entry.path),
+                "resolved_path": str(entry.resolved_path),
+                "symlinked": entry.symlinked,
+            }
+            if not allow_dirty and is_dirty_replacement(entry, source, baseline):
+                skipped_dirty.append(record)
+                continue
+            replacements.append(record)
 
-        if replacements:
+        if replacements or skipped_dirty:
             plans.append(
                 {
                     "name": name,
@@ -540,6 +619,7 @@ def build_dedupe_plan(
                     "source_path": source["source_path"],
                     "selected_by": source["selected_by"],
                     "replacements": replacements,
+                    "skipped_dirty": skipped_dirty,
                 }
             )
 
@@ -604,6 +684,22 @@ def build_recommendations(report: dict) -> list[dict]:
                 "command": (
                     f"python3 scripts/skill_sync.py --diff {compatible[0]['name']}"
                 ),
+            }
+        )
+
+    skipped_dirty_total = sum(
+        len(plan.get("skipped_dirty", [])) for plan in report["dedupe_plan"]
+    )
+    if skipped_dirty_total:
+        recommendations.append(
+            {
+                "priority": "high",
+                "title": f"Review {skipped_dirty_total} dirty copies protected from dedupe",
+                "why": (
+                    "These copies differ from their recorded baseline, so they carry "
+                    "local edits that a symlink replacement would hide."
+                ),
+                "command": "python3 scripts/skill_sync.py --check-drift",
             }
         )
 
@@ -695,6 +791,8 @@ def build_report(
     source_order: list[str],
     strategy: str,
     adopt_root: str | None,
+    baselines: dict | None = None,
+    allow_dirty: bool = False,
 ) -> dict:
     grouped_entries: dict[str, list[SkillEntry]] = defaultdict(list)
     for entry in entries:
@@ -736,7 +834,9 @@ def build_report(
         status_counts[group["status"]] += 1
 
     planned_links = build_missing_link_plan(grouped_entries, roots, source_order, strategy)
-    dedupe_plan = build_dedupe_plan(grouped_entries, source_order, strategy)
+    dedupe_plan = build_dedupe_plan(
+        grouped_entries, source_order, strategy, baselines=baselines, allow_dirty=allow_dirty
+    )
 
     report = {
         "roots": [
@@ -754,6 +854,9 @@ def build_report(
             "discovered_entries": len(entries),
             "planned_missing_links": sum(len(item["destinations"]) for item in planned_links),
             "planned_dedupe_replacements": sum(len(item["replacements"]) for item in dedupe_plan),
+            "dedupe_skipped_dirty": sum(
+                len(item.get("skipped_dirty", [])) for item in dedupe_plan
+            ),
         },
         "groups": groups,
         "planned_links": planned_links,
@@ -791,6 +894,9 @@ def filter_report_groups(report: dict, statuses: set[str]) -> dict:
         "planned_dedupe_replacements": sum(
             len(item["replacements"]) for item in filtered["dedupe_plan"]
         ),
+        "dedupe_skipped_dirty": sum(
+            len(item.get("skipped_dirty", [])) for item in filtered["dedupe_plan"]
+        ),
     }
     filtered["status_filter"] = sorted(statuses)
     return enrich_report(filtered)
@@ -813,6 +919,120 @@ def parse_status_filters(raw_filters: list[str]) -> set[str]:
                 )
             statuses.add(value)
     return statuses
+
+
+def load_baselines(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        data = read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if data.get("kind") != BASELINE_STORE_KIND:
+        return {}
+    baselines = data.get("baselines", {})
+    return baselines if isinstance(baselines, dict) else {}
+
+
+def save_baselines(path: Path, baselines: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(
+        path,
+        {
+            "kind": BASELINE_STORE_KIND,
+            "version": 1,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "baselines": baselines,
+        },
+    )
+
+
+def record_baselines(report: dict, baselines: dict) -> dict:
+    recorded = dict(baselines)
+    updated: list[str] = []
+    skipped: list[str] = []
+
+    for group in report["groups"]:
+        entries = group_entries_from_report(group)
+        canonical = choose_canonical_source(
+            entries, report["source_order"], "prefer-latest", allow_specific=True
+        )
+        if canonical is None or canonical.get("content_hash") is None:
+            skipped.append(group["name"])
+            continue
+        recorded[group["name"]] = {
+            "content_hash": canonical["content_hash"],
+            "platform": canonical["platform"],
+            "path": canonical["display_path"],
+            "recorded_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        updated.append(group["name"])
+
+    return {"baselines": recorded, "updated": sorted(updated), "skipped": sorted(skipped)}
+
+
+def classify_drift(group: dict, baseline: dict | None) -> dict:
+    portable_hashes = sorted(
+        {
+            entry["content_hash"]
+            for entry in group["entries"]
+            if entry["portable"] and entry["content_hash"]
+        }
+    )
+    if not portable_hashes or baseline is None:
+        return {
+            "state": "local-only",
+            "detail": "no recorded baseline; treat as local-origin and never auto-overwrite",
+        }
+
+    baseline_hash = baseline.get("content_hash")
+    if portable_hashes == [baseline_hash]:
+        return {
+            "state": "pristine",
+            "detail": "all portable copies match the recorded baseline; safe to update or dedupe",
+        }
+
+    dirty_paths = sorted(
+        entry["path"]
+        for entry in group["entries"]
+        if entry["portable"]
+        and entry["content_hash"]
+        and entry["content_hash"] != baseline_hash
+    )
+    return {
+        "state": "dirty",
+        "detail": "content differs from the recorded baseline; review the diff before any overwrite",
+        "dirty_paths": dirty_paths,
+    }
+
+
+def build_drift_report(report: dict, baselines: dict) -> dict:
+    skills: list[dict] = []
+    counts: Counter = Counter()
+    for group in report["groups"]:
+        drift = classify_drift(group, baselines.get(group["name"]))
+        counts[drift["state"]] += 1
+        skill_record = {"name": group["name"], "status": group["status"]}
+        skill_record.update(drift)
+        skills.append(skill_record)
+
+    known_names = {group["name"] for group in report["groups"]}
+    missing_baselines = sorted(set(baselines) - known_names)
+
+    return {
+        "kind": "skill-sync-drift",
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "baseline_count": len(baselines),
+        "summary": {
+            "total_skills": len(skills),
+            "pristine": counts.get("pristine", 0),
+            "dirty": counts.get("dirty", 0),
+            "local_only": counts.get("local-only", 0),
+            "missing_baselines": len(missing_baselines),
+        },
+        "skills": skills,
+        "missing_baselines": missing_baselines,
+    }
 
 
 def reorder_source_order(raw_order: str, prefer_root: str | None) -> list[str]:
@@ -1487,13 +1707,20 @@ def format_text(report: dict, sync_missing: bool, dedupe: bool, apply: bool) -> 
             lines.append("- none")
         else:
             for plan in report["dedupe_plan"]:
-                replacements = ", ".join(
-                    f"{item['platform']}:{item['path']}" for item in plan["replacements"]
-                )
-                lines.append(
-                    f"- {plan['name']}: keep {plan['source_path']} "
-                    f"({plan['selected_by']}) | replace {replacements}"
-                )
+                if plan["replacements"]:
+                    replacements = ", ".join(
+                        f"{item['platform']}:{item['path']}" for item in plan["replacements"]
+                    )
+                    lines.append(
+                        f"- {plan['name']}: keep {plan['source_path']} "
+                        f"({plan['selected_by']}) | replace {replacements}"
+                    )
+                for item in plan.get("skipped_dirty", []):
+                    lines.append(
+                        f"- {plan['name']}: skip dirty copy {item['platform']}:{item['path']} "
+                        f"(differs from recorded baseline; review with --diff {plan['name']}, "
+                        f"then re-run with --allow-dirty if intended)"
+                    )
         lines.append("")
 
     if sync_missing or report.get("adopt_root"):
@@ -1533,6 +1760,62 @@ def format_name_list(report: dict) -> str:
         for group in matching:
             lines.append(group["name"])
         lines.append("")
+    return "\n".join(lines).strip()
+
+
+def format_baseline_text(result: dict, store_path: Path) -> str:
+    lines = [
+        f"Baseline store: {store_path}",
+        f"Recorded baselines: {len(result['updated'])}",
+    ]
+    if result["updated"]:
+        lines.append("- " + ", ".join(result["updated"]))
+    if result["skipped"]:
+        lines.append(
+            f"Skipped (no portable content to hash): {', '.join(result['skipped'])}"
+        )
+    return "\n".join(lines)
+
+
+def format_drift_text(drift_report: dict, store_path: Path) -> str:
+    summary = drift_report["summary"]
+    lines = [
+        f"Drift check: {summary['pristine']} pristine, {summary['dirty']} dirty, "
+        f"{summary['local_only']} local-only (of {summary['total_skills']} skills)."
+    ]
+
+    if drift_report["baseline_count"] == 0:
+        lines.append(f"No baselines recorded yet in {store_path}.")
+        lines.append(
+            f"Record the current state as pristine first: python3 {SCRIPT_PATH} --record-baseline"
+        )
+        return "\n".join(lines)
+
+    dirty = [skill for skill in drift_report["skills"] if skill["state"] == "dirty"]
+    if dirty:
+        lines.append("")
+        lines.append("DIRTY (local edits since baseline; never overwrite without review)")
+        for skill in dirty:
+            lines.append(f"- {skill['name']}")
+            for path in skill.get("dirty_paths", [])[:4]:
+                lines.append(f"  {path}")
+            lines.append(f"  review: python3 {SCRIPT_PATH} --diff {skill['name']}")
+
+    local_only = [skill for skill in drift_report["skills"] if skill["state"] == "local-only"]
+    if local_only:
+        lines.append("")
+        lines.append("LOCAL-ONLY (no recorded baseline; back up, never auto-overwrite)")
+        lines.append("- " + ", ".join(skill["name"] for skill in local_only))
+
+    if drift_report["missing_baselines"]:
+        lines.append("")
+        lines.append("MISSING (baseline recorded but skill no longer found)")
+        lines.append("- " + ", ".join(drift_report["missing_baselines"]))
+
+    if not dirty:
+        lines.append("")
+        lines.append("No dirty skills detected. Updates and strict dedupe are safe.")
+
     return "\n".join(lines).strip()
 
 
@@ -1662,6 +1945,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--apply", action="store_true", help="Execute the requested sync or dedupe plan")
     parser.add_argument("--dry-run", action="store_true", help="Explicitly request preview mode")
     parser.add_argument("--restore", help="Restore a previous backup run id or 'latest'")
+    parser.add_argument(
+        "--record-baseline",
+        action="store_true",
+        help="Record current canonical content hashes as the pristine baseline",
+    )
+    parser.add_argument(
+        "--check-drift",
+        action="store_true",
+        help="Report pristine/dirty/local-only drift against recorded baselines; never mutates",
+    )
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Allow dedupe to replace copies that differ from their recorded baseline",
+    )
+    parser.add_argument(
+        "--baseline-store",
+        default=str(
+            env_path(
+                "SKILL_SYNC_BASELINE_STORE",
+                str(Path.home() / ".skill-sync" / "baselines.json"),
+            )
+        ),
+        help="JSON file that stores recorded pristine baselines",
+    )
     parser.add_argument("--export-manifest", help="Write a portable layout manifest for cross-machine skill convergence")
     parser.add_argument("--import-manifest", help="Preview or apply a previously exported layout manifest")
     parser.add_argument(
@@ -1672,7 +1980,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workdir", default=".", help="Workspace directory used to detect ./skills roots")
     parser.add_argument(
         "--source-order",
-        default="agents,codex,claude,opencode,openclaw,workspace",
+        default="agents,codex,claude,hermes,opencode,openclaw,workspace",
         help="Preferred source host order when timestamps are tied",
     )
     return parser.parse_args()
@@ -1681,6 +1989,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     backup_root = Path(args.backup_root).expanduser()
+    baseline_store = Path(args.baseline_store).expanduser()
+    baselines = load_baselines(baseline_store)
 
     if args.restore:
         run_dir = resolve_run_dir(backup_root, args.restore)
@@ -1752,7 +2062,27 @@ def main() -> int:
         source_order=source_order,
         strategy=args.strategy,
         adopt_root=adopt_root,
+        baselines=baselines,
+        allow_dirty=args.allow_dirty,
     )
+
+    if args.record_baseline:
+        result = record_baselines(report, baselines)
+        save_baselines(baseline_store, result["baselines"])
+        if args.format == "json":
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            print(format_baseline_text(result, baseline_store))
+        return 0
+
+    if args.check_drift:
+        drift_report = build_drift_report(report, baselines)
+        if args.format == "json":
+            print(json.dumps(drift_report, indent=2, ensure_ascii=False))
+        else:
+            print(format_drift_text(drift_report, baseline_store))
+        return 0
+
     report = filter_report_groups(report, parse_status_filters(args.status))
 
     if args.export_manifest:

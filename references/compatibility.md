@@ -14,6 +14,7 @@ This heuristic is intentional. It keeps the default sync path safe and predictab
 - `agents`: `~/.agents/skills`
 - `claude`: `~/.claude/skills`
 - `claude-vendor`: `~/.claude/skills/anthropic-skills/skills`
+- `hermes`: `~/.hermes/skills` (direct skills plus one level of categorized subfolders)
 - `opencode`: `~/.config/opencode/skills`
 - `openclaw`: `~/.openclaw/skills`
 - `openclaw-plugin`: `~/.openclaw/extensions/*/skills`
@@ -23,6 +24,7 @@ Only primary roots are used as symlink destinations:
 - `codex`
 - `agents`
 - `claude`
+- `hermes`
 - `opencode`
 - `openclaw`
 
@@ -33,6 +35,18 @@ Nested vendor/plugin roots are scanned for discovery, but they are not used as s
 - `strict`: only dedupe groups whose full portable content hash matches
 - `prefer-latest`: dedupe any all-portable `SKILL.md` group and keep the newest real path
 - `trust-high`: same canonical source rule as `prefer-latest`, but it may also replace scanned vendor/plugin installs
+
+## Drift Baselines
+
+`--record-baseline` stores the canonical content hash of every discovered skill in `~/.skill-sync/baselines.json` (`SKILL_SYNC_BASELINE_STORE` or `--baseline-store` overrides the location).
+
+Drift states derived from the baseline:
+
+- `pristine`: every portable copy matches the recorded hash
+- `dirty`: at least one copy differs from the recorded hash (local edits)
+- `local-only`: no baseline recorded for this skill
+
+Dedupe interaction: under `prefer-latest` and `trust-high`, a replacement candidate whose hash matches neither the baseline nor the selected canonical source is treated as dirty and skipped. The plan lists it under `skipped_dirty`, and only `--allow-dirty` lets it be replaced (after backup, as always). `strict` is unaffected because it only ever touches identical copies.
 
 ## Backup And Restore
 
